@@ -15,231 +15,167 @@ has_writable_dir() {
   [ -w "$dir" ]
 }
 
-resolve_real_binary() {
-  local name="$1"
-  local candidate=""
+maybe_migrate_legacy_gemini_registry() {
+  local registry="$HOME/.gemini/projects.json"
+  local backup="$HOME/.gemini/projects.json.legacy-empty.bak"
+  local normalized=""
 
-  while IFS= read -r candidate; do
-    [ -n "$candidate" ] || continue
-    if [ "$candidate" != "$HOME/.local/bin/$name" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done < <(which -a "$name" 2>/dev/null | awk '!seen[$0]++')
+  if [ ! -f "$registry" ]; then
+    return 0
+  fi
 
-  return 1
+  normalized="$(tr -d '[:space:]' < "$registry" 2>/dev/null || true)"
+  if [ "$normalized" != "{}" ]; then
+    return 0
+  fi
+
+  if [ -f "$backup" ]; then
+    rm -f "$registry"
+    log "Leere Legacy-Gemini-Registry entfernt: $registry"
+    return 0
+  fi
+
+  mv "$registry" "$backup"
+  log "Leere Legacy-Gemini-Registry verschoben: $registry -> $backup"
 }
 
-write_env_wrapper() {
-  local name="$1"
-  local real_bin="$2"
-  local wrapper="$HOME/.local/bin/$name"
+sync_file_if_newer() {
+  local source="$1"
+  local target="$2"
+  local label="$3"
 
-  cat > "$wrapper" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
+  [ -f "$source" ] || return 0
+  mkdir -p "$(dirname "$target")"
 
-unset_if_empty() {
-  local var_name="\$1"
-  if [ "\${!var_name+x}" = "x" ] && [ -z "\${!var_name}" ]; then
-    unset "\$var_name"
+  if [ ! -f "$target" ] || [ "$source" -nt "$target" ]; then
+    cp -p "$source" "$target"
+    log "$label synchronisiert: $source -> $target"
   fi
 }
 
-for v in \\
-  HTTP_PROXY HTTPS_PROXY ALL_PROXY \\
-  http_proxy https_proxy all_proxy \\
-  NO_PROXY no_proxy \\
-  NODE_USE_SYSTEM_CA \\
-  SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE
-do
-  unset_if_empty "\$v"
-done
+sync_claude_root_config() {
+  local root_config="$HOME/.claude.json"
+  local persist_config="$HOME/.persist/claude/.claude.json"
 
-SYS_CA="/etc/ssl/certs/ca-certificates.crt"
-CORP_CA="\$HOME/.config/corp-ca.pem"
-CA_BUNDLE=""
-
-if [ -r "\$CORP_CA" ]; then
-  CA_BUNDLE="\$CORP_CA"
-elif [ -r "\$SYS_CA" ]; then
-  CA_BUNDLE="\$SYS_CA"
-fi
-
-if [[ "\${NODE_EXTRA_CA_CERTS:-}" =~ ^[A-Za-z]:\\\\ ]]; then
-  unset NODE_EXTRA_CA_CERTS
-fi
-
-if [ -n "\$CA_BUNDLE" ]; then
-  export SSL_CERT_FILE="\$CA_BUNDLE"
-  export REQUESTS_CA_BUNDLE="\$CA_BUNDLE"
-  export CURL_CA_BUNDLE="\$CA_BUNDLE"
-  export NODE_EXTRA_CA_CERTS="\$CA_BUNDLE"
-  export NODE_USE_SYSTEM_CA=1
-fi
-
-exec "$real_bin" "\$@"
-EOF
-
-  chmod +x "$wrapper"
-  log "Wrapper erstellt: $wrapper -> $real_bin"
+  sync_file_if_newer "$persist_config" "$root_config" "Claude Root-Config wiederhergestellt"
+  sync_file_if_newer "$root_config" "$persist_config" "Claude Root-Config persistiert"
 }
 
-write_repo_node_wrapper() {
+ensure_claude_runtime_state() {
+  local helper="$PWD/.devcontainer/scripts/claude-config.mjs"
+
+  if [ ! -f "$helper" ]; then
+    if git_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+      helper="$git_root/.devcontainer/scripts/claude-config.mjs"
+    fi
+  fi
+
+  if [ -f "$helper" ]; then
+    node "$helper" >/dev/null 2>&1 || true
+  fi
+}
+
+write_shell_wrapper() {
   local name="$1"
   local script_rel="$2"
-  local wrapper="$HOME/.local/bin/$name"
+  local wrapper="$HOME/.local/agent-bin/$name"
+  local shim="$HOME/.local/bin/$name"
 
-  cat > "$wrapper" <<EOF
+  cat > "$wrapper" <<EOF_WRAPPER
 #!/usr/bin/env bash
 set -euo pipefail
 
 SCRIPT_REL="$script_rel"
 
 if [ -f "\$PWD/\$SCRIPT_REL" ]; then
-  exec node "\$PWD/\$SCRIPT_REL" "\$@"
+  exec bash "\$PWD/\$SCRIPT_REL" "$name" "\$@"
 fi
 
 if git_root="\$(git rev-parse --show-toplevel 2>/dev/null)"; then
   if [ -f "\$git_root/\$SCRIPT_REL" ]; then
-    exec node "\$git_root/\$SCRIPT_REL" "\$@"
+    exec bash "\$git_root/\$SCRIPT_REL" "$name" "\$@"
   fi
 fi
 
 echo "Konnte \$SCRIPT_REL nicht finden. Bitte aus dem Repo-Verzeichnis ausführen." >&2
 exit 1
-EOF
+EOF_WRAPPER
 
   chmod +x "$wrapper"
-  log "Helper erstellt: $wrapper"
+  ln -snf "../agent-bin/$name" "$shim"
+  log "Wrapper erstellt: $wrapper"
+  log "Shim erstellt   : $shim -> ../agent-bin/$name"
 }
 
-write_claude_login_wrapper() {
-  local real_claude="$1"
-  local wrapper="$HOME/.local/bin/claude-login"
+write_repo_script_wrapper() {
+  local name="$1"
+  local script_rel="$2"
+  local runner="$3"
+  local wrapper="$HOME/.local/agent-bin/$name"
+  local shim="$HOME/.local/bin/$name"
 
-  cat > "$wrapper" <<EOF
+  cat > "$wrapper" <<EOF_WRAPPER
 #!/usr/bin/env bash
 set -euo pipefail
 
-unset_if_empty() {
-  local var_name="\$1"
-  if [ "\${!var_name+x}" = "x" ] && [ -z "\${!var_name}" ]; then
-    unset "\$var_name"
-  fi
-}
-
-for v in \\
-  HTTP_PROXY HTTPS_PROXY ALL_PROXY \\
-  http_proxy https_proxy all_proxy \\
-  NO_PROXY no_proxy \\
-  NODE_USE_SYSTEM_CA \\
-  SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE
-do
-  unset_if_empty "\$v"
-done
-
-SYS_CA="/etc/ssl/certs/ca-certificates.crt"
-CORP_CA="\$HOME/.config/corp-ca.pem"
-CA_BUNDLE=""
-
-if [ -r "\$CORP_CA" ]; then
-  CA_BUNDLE="\$CORP_CA"
-elif [ -r "\$SYS_CA" ]; then
-  CA_BUNDLE="\$SYS_CA"
-fi
-
-if [[ "\${NODE_EXTRA_CA_CERTS:-}" =~ ^[A-Za-z]:\\\\ ]]; then
-  unset NODE_EXTRA_CA_CERTS
-fi
-
-if [ -n "\$CA_BUNDLE" ]; then
-  export SSL_CERT_FILE="\$CA_BUNDLE"
-  export REQUESTS_CA_BUNDLE="\$CA_BUNDLE"
-  export CURL_CA_BUNDLE="\$CA_BUNDLE"
-  export NODE_EXTRA_CA_CERTS="\$CA_BUNDLE"
-  export NODE_USE_SYSTEM_CA=1
-fi
-
-SCRIPT_REL=".devcontainer/scripts/claude-login.mjs"
+SCRIPT_REL="$script_rel"
 
 if [ -f "\$PWD/\$SCRIPT_REL" ]; then
-  exec node "\$PWD/\$SCRIPT_REL" "$real_claude" "\$@"
+  exec $runner "\$PWD/\$SCRIPT_REL" "\$@"
 fi
 
 if git_root="\$(git rev-parse --show-toplevel 2>/dev/null)"; then
   if [ -f "\$git_root/\$SCRIPT_REL" ]; then
-    exec node "\$git_root/\$SCRIPT_REL" "$real_claude" "\$@"
+    exec $runner "\$git_root/\$SCRIPT_REL" "\$@"
   fi
 fi
 
 echo "Konnte \$SCRIPT_REL nicht finden. Bitte aus dem Repo-Verzeichnis ausführen." >&2
 exit 1
-EOF
+EOF_WRAPPER
 
   chmod +x "$wrapper"
+  ln -snf "../agent-bin/$name" "$shim"
   log "Helper erstellt: $wrapper"
+  log "Shim erstellt   : $shim -> ../agent-bin/$name"
 }
 
 main() {
   log "Bootstrap starting as user: $(id -un) (uid=$(id -u), gid=$(id -g))"
   log "HOME=$HOME"
 
-  mkdir -p "$HOME/.local/bin"
+  mkdir -p "$HOME/.local/bin" "$HOME/.local/agent-bin"
 
-  if has_writable_dir "$HOME/.codex"; then
-    if [ ! -f "$HOME/.codex/config.toml" ]; then
-      cat > "$HOME/.codex/config.toml" <<'EOF'
-# User-level Codex config
-# Projektbezogene Overrides kannst du zusätzlich in .codex/config.toml ablegen.
-EOF
-      chmod 600 "$HOME/.codex/config.toml"
-      log "Erstellt: $HOME/.codex/config.toml"
-    fi
-  else
-    warn "~/.codex ist nicht schreibbar. Codex kann Konfiguration/Login evtl. nicht persistieren."
-  fi
-
-  if has_writable_dir "$HOME/.gemini"; then
-    if [ ! -f "$HOME/.gemini/projects.json" ]; then
-      printf '{}\n' > "$HOME/.gemini/projects.json"
-      chmod 600 "$HOME/.gemini/projects.json"
-      log "Erstellt: $HOME/.gemini/projects.json"
-    fi
-  else
-    warn "~/.gemini ist nicht schreibbar. Gemini kann Konfiguration/Login evtl. nicht persistieren."
-  fi
-
-  if ! has_writable_dir "$HOME/.config/gemini"; then
-    warn "~/.config/gemini ist nicht schreibbar. Gemini-IDE-Begleitdateien können Probleme machen."
-  fi
-
-  if ! has_writable_dir "$HOME/.claude"; then
-    warn "~/.claude ist nicht schreibbar. Claude kann Konfiguration/Login evtl. nicht persistieren."
-  fi
-
-  if ! has_writable_dir "$HOME/.persist/claude"; then
-    warn "~/.persist/claude ist nicht schreibbar. Claude-Sessiondaten können Probleme machen."
-  fi
-
-  local tool=""
-  local real_bin=""
-
-  for tool in codex gemini claude; do
-    if real_bin="$(resolve_real_binary "$tool")"; then
-      write_env_wrapper "$tool" "$real_bin"
-      if [ "$tool" = "claude" ]; then
-        write_claude_login_wrapper "$real_bin"
-      fi
+  local dir=""
+  for dir in \
+    "$HOME/.codex" \
+    "$HOME/.gemini" \
+    "$HOME/.config/gemini" \
+    "$HOME/.claude" \
+    "$HOME/.persist/claude"
+  do
+    if has_writable_dir "$dir"; then
+      log "Verzeichnis bereit: $dir"
     else
-      warn "Binary nicht gefunden, Wrapper übersprungen: $tool"
+      warn "$dir ist nicht schreibbar. Persistenz oder Logins können fehlschlagen."
     fi
   done
 
-  write_repo_node_wrapper "claude-bridge" ".devcontainer/scripts/claude-ipv4-bridge.mjs"
+  maybe_migrate_legacy_gemini_registry
+  sync_claude_root_config
+  ensure_claude_runtime_state
+  sync_claude_root_config
+
+  write_shell_wrapper "codex" ".devcontainer/scripts/run-agent-tool.sh"
+  write_shell_wrapper "gemini" ".devcontainer/scripts/run-agent-tool.sh"
+  write_shell_wrapper "claude" ".devcontainer/scripts/run-agent-tool.sh"
+  write_repo_script_wrapper "claude-login" ".devcontainer/scripts/run-claude-login.sh" "bash"
+  write_repo_script_wrapper "claude-bridge" ".devcontainer/scripts/claude-ipv4-bridge.mjs" "node"
+  write_repo_script_wrapper "agent-doctor" ".devcontainer/scripts/doctor.sh" "bash"
 
   log "Bootstrap finished OK."
   log "Verwende für Claude-Login bevorzugt: claude-login"
+  log "Verwende für Diagnose: agent-doctor"
 }
 
 main "$@"

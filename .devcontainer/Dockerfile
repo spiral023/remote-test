@@ -12,12 +12,6 @@ RUN apt-get update \
     xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# AI CLIs
 RUN npm i -g @openai/codex @google/gemini-cli
 
-# Claude Code via install.sh (empfohlen)
-USER node
-RUN curl -fsSL https://claude.ai/install.sh | bash
-
-# Claude Pfade
-ENV PATH="/home/node/.claude/bin:/home/node/.local/bin:${PATH}"
+ENV PATH="/home/node/.local/agent-bin:/home/node/.local/bin:${PATH}"

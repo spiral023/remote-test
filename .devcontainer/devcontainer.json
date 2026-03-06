@@ -1,6 +1,9 @@
 {
   "name": "multi-agent-coding-container",
   "build": { "dockerfile": "Dockerfile" },
+  "features": {
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+  },
   "remoteUser": "node",
 
   "runArgs": [
@@ -11,13 +14,11 @@
   ],
 
   "mounts": [
-    "source=agent-codex,target=/home/node/.codex,type=volume",
-
-    "source=agent-claude-dir,target=/home/node/.claude,type=volume",
-    "source=agent-claude-json,target=/home/node/.persist/claude,type=volume",
-
-    "source=agent-gemini,target=/home/node/.gemini,type=volume",
-    "source=agent-xdg-gemini,target=/home/node/.config/gemini,type=volume"
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.devcontainer-agent-state/remote-test/codex,target=/home/node/.codex,type=bind",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.devcontainer-agent-state/remote-test/gemini,target=/home/node/.gemini,type=bind",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.devcontainer-agent-state/remote-test/gemini-config,target=/home/node/.config/gemini,type=bind",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.devcontainer-agent-state/remote-test/claude,target=/home/node/.claude,type=bind",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.devcontainer-agent-state/remote-test/claude-persist,target=/home/node/.persist/claude,type=bind"
   ],
 
   "containerEnv": {
@@ -25,6 +26,10 @@
     "HTTPS_PROXY": "${localEnv:HTTPS_PROXY}",
     "ALL_PROXY": "${localEnv:ALL_PROXY}",
     "NO_PROXY": "${localEnv:NO_PROXY}",
+    "http_proxy": "${localEnv:http_proxy}",
+    "https_proxy": "${localEnv:https_proxy}",
+    "all_proxy": "${localEnv:all_proxy}",
+    "no_proxy": "${localEnv:no_proxy}",
     "NODE_EXTRA_CA_CERTS": "${localEnv:NODE_EXTRA_CA_CERTS}",
     "NODE_USE_SYSTEM_CA": "${localEnv:NODE_USE_SYSTEM_CA}"
   },
@@ -34,6 +39,10 @@
     "HTTPS_PROXY": "${containerEnv:HTTPS_PROXY}",
     "ALL_PROXY": "${containerEnv:ALL_PROXY}",
     "NO_PROXY": "${containerEnv:NO_PROXY}",
+    "http_proxy": "${containerEnv:http_proxy}",
+    "https_proxy": "${containerEnv:https_proxy}",
+    "all_proxy": "${containerEnv:all_proxy}",
+    "no_proxy": "${containerEnv:no_proxy}",
     "NODE_EXTRA_CA_CERTS": "${containerEnv:NODE_EXTRA_CA_CERTS}",
     "NODE_USE_SYSTEM_CA": "${containerEnv:NODE_USE_SYSTEM_CA}"
   },
@@ -48,5 +57,6 @@
     }
   },
 
-  "postCreateCommand": "bash -lc '.devcontainer/scripts/bootstrap.sh'"
+  "postCreateCommand": "bash -lc '.devcontainer/scripts/bootstrap.sh'",
+  "postStartCommand": "bash -lc '.devcontainer/scripts/bootstrap.sh'"
 }

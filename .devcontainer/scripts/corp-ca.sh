@@ -27,7 +27,6 @@ if [ "${#FILES[@]}" -eq 0 ]; then
   exit 1
 fi
 
-# 1) System trust store (Debian update-ca-certificates) :contentReference[oaicite:7]{index=7}
 if command -v sudo >/dev/null 2>&1; then
   for f in "${FILES[@]}"; do
     base="$(basename "$f")"
@@ -36,18 +35,16 @@ if command -v sudo >/dev/null 2>&1; then
   sudo update-ca-certificates
 fi
 
-# 2) Node trust: system CA + extra bundle
-# Node kann system CAs + NODE_EXTRA_CA_CERTS kombinieren. :contentReference[oaicite:8]{index=8}
+mkdir -p /home/node/.config
 BUNDLE="/home/node/.config/corp-ca.pem"
 cat "${FILES[@]}" > "$BUNDLE"
 chmod 0644 "$BUNDLE"
 
-# Schreibe in /etc/profile.d, damit alle Shells/Tools es haben
 if command -v sudo >/dev/null 2>&1; then
-  sudo tee /etc/profile.d/98-corp-ca.sh >/dev/null <<EOF
+  sudo tee /etc/profile.d/98-corp-ca.sh >/dev/null <<EOF_CA
 export NODE_USE_SYSTEM_CA=1
 export NODE_EXTRA_CA_CERTS="$BUNDLE"
-EOF
+EOF_CA
 fi
 
 echo "[ca] Installed ${#FILES[@]} corporate CA cert(s)."
