@@ -1,0 +1,7 @@
+# Force Linux line endings for shell scripts
+*.sh text eol=lf
+
+# Devcontainer / Docker files are also typically LF-friendly
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+.devcontainer/** text eol=lf
