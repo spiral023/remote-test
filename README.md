@@ -8,6 +8,33 @@
   Built for local Docker Desktop + VS Code Dev Containers, with persistent agent state outside the repository.
 </p>
 
+<p align="center">
+  <code>codex</code> · <code>gemini</code> · <code>claude</code> · <code>claude-login</code> · <code>agent-doctor</code>
+</p>
+
+## TL;DR
+
+> [!IMPORTANT]
+> This repo gives you a local VS Code devcontainer where `codex`, `gemini`, and `claude` run through repo-managed wrappers instead of the raw binaries.
+>
+> State survives rebuilds because it is stored in host bind mounts under `~/.devcontainer-agent-state/remote-test/` or `%USERPROFILE%\.devcontainer-agent-state\remote-test\`.
+>
+> For Claude, use `claude-login`, not plain `claude auth login`.
+
+| If you want to... | Use this |
+| --- | --- |
+| Start the environment | `Dev Containers: Rebuild and Reopen in Container` |
+| Verify the setup | `agent-doctor` |
+| Log into Claude | `claude-login` |
+| Check Claude auth only | `claude auth status` |
+| Reinstall wrappers | `bash .devcontainer/scripts/bootstrap.sh` |
+| Reset everything | Delete the host state folder and rebuild |
+
+```bash
+agent-doctor
+claude-login
+```
+
 ## Overview
 
 This repository is not an application package. It is a development container that gives you a repeatable local environment for three AI coding CLIs:
@@ -19,6 +46,8 @@ This repository is not an application package. It is a development container tha
 | `claude` | Anthropic Claude Code | Needs extra login, persistence, and runtime-state handling |
 
 The design goal is simple: rebuild the container without losing agent state, and make each CLI behave predictably inside a devcontainer.
+
+---
 
 ## Quick Start
 
@@ -33,6 +62,11 @@ gemini --version
 claude --version
 ```
 
+> [!TIP]
+> If Claude is the main reason you are here, the shortest working path is: rebuild container -> `agent-doctor` -> `claude-login`.
+
+---
+
 ## How It Works
 
 When the devcontainer starts, the environment is assembled in this order:
@@ -46,6 +80,9 @@ When the devcontainer starts, the environment is assembled in this order:
 
 This is the core mental model for the repository: the tools you type are wrapper entrypoints, not the raw binaries.
 
+> [!NOTE]
+> The wrapper layer is the product here. The container is intentionally opinionated so the CLIs behave consistently after rebuilds, proxy changes, and Claude login flows.
+
 ## What Happens When You Run Each Command
 
 | Command | What actually happens |
@@ -55,6 +92,8 @@ This is the core mental model for the repository: the tools you type are wrapper
 | `claude-login` | Login helper starts `claude auth login`, detects the local callback listener, applies the IPv4/IPv6 workaround if needed, syncs Claude config, completes runtime state, then starts `claude` |
 | `claude` | Wrapper restores `~/.claude.json`, ensures Claude runtime and onboarding state exist, launches the real Claude binary, then persists root config back to the mounted location |
 | `agent-doctor` | Runs basic diagnostics for wrapper resolution, writable directories, localhost behavior, and Claude config files |
+
+---
 
 ## Architecture
 
@@ -76,6 +115,8 @@ flowchart LR
   M --> Q[~/.claude]
   M --> R[~/.persist/claude]
 ```
+
+---
 
 ## Persistent State
 
@@ -104,11 +145,16 @@ Claude account state is split across multiple files:
 
 This split is important. `claude auth status` can look correct while interactive `claude` still behaves like a first run if `~/.claude.json` is missing or incomplete. The wrapper layer exists partly to keep these files in sync.
 
+> [!TIP]
+> If interactive `claude` behaves strangely after a rebuild, check Claude root config persistence before assuming the OAuth token is broken.
+
 ### Reset
 
 1. Close the container.
 2. Delete `~/.devcontainer-agent-state/remote-test/` or `%USERPROFILE%\.devcontainer-agent-state\remote-test\`.
 3. Rebuild the container.
+
+---
 
 ## Claude Login
 
@@ -153,6 +199,11 @@ After a successful login:
 ### Common confusion
 
 If Claude asks whether you trust the current workspace, that is not a login failure. It is Claude's workspace trust gate for the current folder.
+
+> [!WARNING]
+> `claude auth status` and interactive `claude` are related, but not identical checks. OAuth can be valid while runtime or onboarding state is still incomplete.
+
+---
 
 ## Troubleshooting By Symptom
 
@@ -200,6 +251,8 @@ echo "$NODE_EXTRA_CA_CERTS"
 
 Then review `.devcontainer/devcontainer.env`, `.devcontainer/scripts/proxy.sh`, and `.devcontainer/scripts/corp-ca.sh`.
 
+---
+
 ## Repository Layout
 
 ```text
@@ -214,6 +267,8 @@ AGENTS.md
 README.md
 ```
 
+---
+
 ## Key Scripts
 
 | Script | Purpose |
@@ -224,6 +279,8 @@ README.md
 | `.devcontainer/scripts/claude-login.mjs` | Hardened Claude login and callback handling |
 | `.devcontainer/scripts/claude-config.mjs` | Restores Claude runtime and onboarding state |
 | `.devcontainer/scripts/doctor.sh` | Diagnostics for wrappers, mounts, and localhost resolution |
+
+---
 
 ## Proxy and CA Support
 
@@ -245,6 +302,8 @@ bash .devcontainer/scripts/proxy.sh
 bash .devcontainer/scripts/corp-ca.sh
 ```
 
+---
+
 ## Manual Verification
 
 Use these checks after changing the devcontainer or wrapper scripts:
@@ -265,11 +324,15 @@ claude-login --login-only
 claude
 ```
 
+---
+
 ## Security Notes
 
 - Do not commit `.devcontainer/devcontainer.env`
 - Do not commit files under `.devcontainer/certs/`
 - Keep proxy credentials, tokens, and corporate CA material local only
+
+---
 
 ## Further Reading
 
