@@ -10,23 +10,51 @@
 
 ## Overview
 
-This repository is not an application package. It is a devcontainer setup that gives you a repeatable coding environment for three local AI coding agents:
+This repository is not an application package. It is a development container that gives you a repeatable local environment for three AI coding CLIs:
 
-| Tool | Purpose | Notes |
+| Tool | Purpose | Why it is wrapped |
 | --- | --- | --- |
-| `codex` | OpenAI coding agent CLI | Wrapped to run with the container's CA and proxy settings |
-| `gemini` | Google Gemini CLI | Uses persistent home/config mounts |
-| `claude` | Anthropic Claude Code | Wrapped to harden login and persist account state |
+| `codex` | OpenAI coding agent CLI | Normalizes proxy, CA, and binary resolution |
+| `gemini` | Google Gemini CLI | Uses persistent home and config mounts |
+| `claude` | Anthropic Claude Code | Needs extra login, persistence, and runtime-state handling |
 
-The container is designed for local use, not Codespaces. Agent state is stored on the host so rebuilds do not wipe logins and local preferences.
+The design goal is simple: rebuild the container without losing agent state, and make each CLI behave predictably inside a devcontainer.
 
-## What This Setup Does
+## Quick Start
 
-- Creates shell wrappers for `codex`, `gemini`, `claude`, `claude-login`, `claude-bridge`, and `agent-doctor`
-- Persists agent data through host bind mounts outside the repo
-- Normalizes proxy and CA handling for the wrapped CLIs
-- Hardens Claude login inside devcontainers, including IPv4/IPv6 callback handling
-- Restores Claude runtime state so `claude auth status` and interactive `claude` stay aligned
+1. Open the repository in VS Code.
+2. Run `Dev Containers: Rebuild and Reopen in Container`.
+3. Inside the container, verify the setup:
+
+```bash
+agent-doctor
+codex --version
+gemini --version
+claude --version
+```
+
+## How It Works
+
+When the devcontainer starts, the environment is assembled in this order:
+
+1. VS Code launches the devcontainer from `.devcontainer/devcontainer.json`.
+2. `bootstrap.sh` runs on both `postCreateCommand` and `postStartCommand`.
+3. Bootstrap creates wrapper shims in `~/.local/bin`, so `codex`, `gemini`, and `claude` resolve to the repo-managed wrappers before the real binaries.
+4. Those wrappers resolve the actual installed binary, clean up CA and proxy environment variables, and then launch the real CLI.
+5. Agent state is read from bind mounts on the host, so rebuilds do not wipe local logins and config.
+6. Claude gets additional handling for OAuth callback routing, root config persistence, and onboarding/runtime state.
+
+This is the core mental model for the repository: the tools you type are wrapper entrypoints, not the raw binaries.
+
+## What Happens When You Run Each Command
+
+| Command | What actually happens |
+| --- | --- |
+| `codex` | Wrapper resolves the real Codex binary, normalizes CA and proxy variables, then launches Codex |
+| `gemini` | Wrapper resolves the real Gemini binary, normalizes environment, then launches Gemini with its persistent directories mounted |
+| `claude-login` | Login helper starts `claude auth login`, detects the local callback listener, applies the IPv4/IPv6 workaround if needed, syncs Claude config, completes runtime state, then starts `claude` |
+| `claude` | Wrapper restores `~/.claude.json`, ensures Claude runtime and onboarding state exist, launches the real Claude binary, then persists root config back to the mounted location |
+| `agent-doctor` | Runs basic diagnostics for wrapper resolution, writable directories, localhost behavior, and Claude config files |
 
 ## Architecture
 
@@ -49,40 +77,6 @@ flowchart LR
   M --> R[~/.persist/claude]
 ```
 
-## Repository Layout
-
-```text
-.devcontainer/
-  Dockerfile
-  devcontainer.json
-  devcontainer.env.example
-  README.md
-  scripts/
-  windows/
-AGENTS.md
-README.md
-```
-
-## Requirements
-
-- VS Code with the `Dev Containers` extension
-- Docker Desktop
-- Local Docker engine
-- Optional on Windows: `px` for corporate proxy environments
-
-## Quick Start
-
-1. Open the repository in VS Code.
-2. Run `Dev Containers: Rebuild and Reopen in Container`.
-3. Inside the container, verify the environment:
-
-```bash
-agent-doctor
-codex --version
-gemini --version
-claude --version
-```
-
 ## Persistent State
 
 Agent state is intentionally stored outside the repository:
@@ -97,33 +91,50 @@ Mounted locations inside the container:
 | `/home/node/.codex` | Codex state |
 | `/home/node/.gemini` | Gemini state |
 | `/home/node/.config/gemini` | Gemini config |
-| `/home/node/.claude` | Claude credentials and runtime data |
-| `/home/node/.persist/claude` | Persistent Claude root config mirror |
+| `/home/node/.claude` | Claude credentials and runtime files |
+| `/home/node/.persist/claude` | Persistent storage for Claude root config |
+
+### Why Claude Needs More Than One Path
+
+Claude account state is split across multiple files:
+
+- `~/.claude/.credentials.json` stores OAuth credentials
+- `~/.claude.json` stores root-level Claude account and runtime context
+- `~/.persist/claude/.claude.json` is the persistent mirror used across container rebuilds
+
+This split is important. `claude auth status` can look correct while interactive `claude` still behaves like a first run if `~/.claude.json` is missing or incomplete. The wrapper layer exists partly to keep these files in sync.
 
 ### Reset
 
 1. Close the container.
-2. Delete the host folder `~/.devcontainer-agent-state/remote-test/` or `%USERPROFILE%\.devcontainer-agent-state\remote-test\`.
+2. Delete `~/.devcontainer-agent-state/remote-test/` or `%USERPROFILE%\.devcontainer-agent-state\remote-test\`.
 3. Rebuild the container.
 
 ## Claude Login
 
-Use the hardened helper:
+Use this command for browser login:
 
 ```bash
 claude-login
 ```
 
-`claude-login` exists because Claude's browser login flow behaves differently in a devcontainer than it does on a plain local shell.
+### Why plain Claude login is fragile in a devcontainer
 
-It currently does all of the following:
+Claude's login flow assumes a local callback path that is easy on a normal machine but less reliable in a container:
 
-- starts `claude auth login` with `--dns-result-order=ipv4first`
-- detects the local OAuth callback listener even when Claude prints only the platform callback URL
-- starts the IPv4 to IPv6 bridge only when the callback listener requires it
-- syncs `~/.claude.json` with `~/.persist/claude/.claude.json`
-- ensures Claude onboarding state exists so interactive `claude` does not fall back into the welcome/login setup
-- launches `claude` automatically after a successful login
+- `localhost` may resolve IPv6-first inside the container
+- recent Claude versions may print only the platform callback URL instead of the local callback port
+- Claude stores auth and runtime context in different places
+- interactive `claude` also checks onboarding/runtime state, not just OAuth validity
+
+### What `claude-login` fixes
+
+- starts login with `--dns-result-order=ipv4first`
+- detects the actual callback listener opened by Claude
+- starts the IPv4 to IPv6 bridge only when needed
+- syncs `~/.claude.json` into persistent storage
+- ensures onboarding state exists so `claude` does not fall back into setup screens
+- auto-starts `claude` after a successful login
 
 If you only want the login step:
 
@@ -131,18 +142,88 @@ If you only want the login step:
 claude-login --login-only
 ```
 
-### Important Claude Detail
+### What success looks like
 
-Claude stores account context in two places:
+After a successful login:
 
-- `~/.claude/.credentials.json`
-- `~/.claude.json`
+- `claude auth status` reports that the account is logged in
+- `claude` opens normally instead of the login setup flow
+- the next prompt may be workspace trust, not authentication
 
-Persisting only `~/.claude/` is not enough. This repository explicitly mirrors `~/.claude.json` into `~/.persist/claude/.claude.json` and restores it on startup.
+### Common confusion
 
-### Expected First Interactive Prompt
+If Claude asks whether you trust the current workspace, that is not a login failure. It is Claude's workspace trust gate for the current folder.
 
-After a valid Claude login, the next screen may still ask whether you trust the current workspace. That is a workspace trust prompt, not an authentication failure.
+## Troubleshooting By Symptom
+
+### Browser login completes, but Claude still looks logged out
+
+Run:
+
+```bash
+claude auth status
+agent-doctor
+```
+
+Most likely cause: root config was missing or stale, not the OAuth token itself.
+
+### `claude auth status` says logged in, but `claude` shows setup
+
+Most likely cause: interactive Claude is missing runtime or onboarding state in `~/.claude.json`. The wrapper now restores and completes that state before launch.
+
+### Claude opens a trust prompt after login
+
+This is expected. Workspace trust is separate from authentication.
+
+### Wrappers do not seem to be used
+
+Run:
+
+```bash
+which claude
+which codex
+which gemini
+bash .devcontainer/scripts/bootstrap.sh
+```
+
+The expected wrapper path is under `~/.local/bin/`.
+
+### Proxy or CA problems
+
+Check:
+
+```bash
+agent-doctor
+echo "$HTTP_PROXY"
+echo "$NODE_EXTRA_CA_CERTS"
+```
+
+Then review `.devcontainer/devcontainer.env`, `.devcontainer/scripts/proxy.sh`, and `.devcontainer/scripts/corp-ca.sh`.
+
+## Repository Layout
+
+```text
+.devcontainer/
+  Dockerfile
+  devcontainer.json
+  devcontainer.env.example
+  README.md
+  scripts/
+  windows/
+AGENTS.md
+README.md
+```
+
+## Key Scripts
+
+| Script | Purpose |
+| --- | --- |
+| `.devcontainer/scripts/bootstrap.sh` | Creates wrappers, shims, and persistent-state sync |
+| `.devcontainer/scripts/run-agent-tool.sh` | Launches wrapped CLIs with normalized environment |
+| `.devcontainer/scripts/agent-env.sh` | Resolves real binaries and CA/proxy settings |
+| `.devcontainer/scripts/claude-login.mjs` | Hardened Claude login and callback handling |
+| `.devcontainer/scripts/claude-config.mjs` | Restores Claude runtime and onboarding state |
+| `.devcontainer/scripts/doctor.sh` | Diagnostics for wrappers, mounts, and localhost resolution |
 
 ## Proxy and CA Support
 
@@ -154,8 +235,8 @@ Default local setup:
 Corporate options:
 
 - use `USE_LOCAL_PROXY=1` and start `.devcontainer/windows/start-px.ps1` on Windows
-- or set `HTTP_PROXY` / `HTTPS_PROXY` in `.devcontainer/devcontainer.env`
-- place corporate certificates in `.devcontainer/certs/*.crt` and enable `USE_CORP_CA=1`
+- or set `HTTP_PROXY` and `HTTPS_PROXY` in `.devcontainer/devcontainer.env`
+- place certificates in `.devcontainer/certs/*.crt` and enable `USE_CORP_CA=1`
 
 Helper scripts:
 
@@ -163,17 +244,6 @@ Helper scripts:
 bash .devcontainer/scripts/proxy.sh
 bash .devcontainer/scripts/corp-ca.sh
 ```
-
-## Key Scripts
-
-| Script | Purpose |
-| --- | --- |
-| `.devcontainer/scripts/bootstrap.sh` | Creates wrappers and syncs persistent state |
-| `.devcontainer/scripts/run-agent-tool.sh` | Launches wrapped CLIs with normalized environment |
-| `.devcontainer/scripts/agent-env.sh` | Resolves real binaries and CA/proxy settings |
-| `.devcontainer/scripts/claude-login.mjs` | Hardened Claude login flow |
-| `.devcontainer/scripts/claude-config.mjs` | Restores Claude onboarding/runtime state |
-| `.devcontainer/scripts/doctor.sh` | Diagnostics for wrappers, paths, and localhost behavior |
 
 ## Manual Verification
 
@@ -188,7 +258,7 @@ claude --version
 claude auth status
 ```
 
-For Claude login changes, also test:
+For Claude login behavior, also test:
 
 ```bash
 claude-login --login-only
@@ -201,8 +271,8 @@ claude
 - Do not commit files under `.devcontainer/certs/`
 - Keep proxy credentials, tokens, and corporate CA material local only
 
-## Maintainer Notes
+## Further Reading
 
-- Primary repo overview lives in this `README.md`
-- Maintainer workflow rules live in `AGENTS.md`
-- Devcontainer-specific implementation details live in `.devcontainer/README.md`
+- Root overview: `README.md`
+- Maintainer guidance: `AGENTS.md`
+- Container-focused details: `.devcontainer/README.md`
