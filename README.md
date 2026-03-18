@@ -19,6 +19,8 @@
 >
 > State survives rebuilds because it is stored in host bind mounts under `~/.devcontainer-agent-state/remote-test/` or `%USERPROFILE%\.devcontainer-agent-state\remote-test\`.
 >
+> On first start, `initializeCommand` creates the required host directories before Docker validates the bind mounts.
+>
 > For Claude, use `claude-login`, not plain `claude auth login`.
 
 | If you want to... | Use this |
@@ -72,11 +74,12 @@ claude --version
 When the devcontainer starts, the environment is assembled in this order:
 
 1. VS Code launches the devcontainer from `.devcontainer/devcontainer.json`.
-2. `bootstrap.sh` runs on both `postCreateCommand` and `postStartCommand`.
-3. Bootstrap creates wrapper shims in `~/.local/bin`, so `codex`, `gemini`, and `claude` resolve to the repo-managed wrappers before the real binaries.
-4. Those wrappers resolve the actual installed binary, clean up CA and proxy environment variables, and then launch the real CLI.
-5. Agent state is read from bind mounts on the host, so rebuilds do not wipe local logins and config.
-6. Claude gets additional handling for OAuth callback routing, root config persistence, and onboarding/runtime state.
+2. `initializeCommand` creates the required host state directories before Docker starts the container.
+3. `bootstrap.sh` runs on both `postCreateCommand` and `postStartCommand`.
+4. Bootstrap creates wrapper shims in `~/.local/bin`, so `codex`, `gemini`, and `claude` resolve to the repo-managed wrappers before the real binaries.
+5. Those wrappers resolve the actual installed binary, clean up CA and proxy environment variables, and then launch the real CLI.
+6. Agent state is read from bind mounts on the host, so rebuilds do not wipe local logins and config.
+7. Claude gets additional handling for OAuth callback routing, root config persistence, and onboarding/runtime state.
 
 This is the core mental model for the repository: the tools you type are wrapper entrypoints, not the raw binaries.
 
@@ -124,6 +127,14 @@ Agent state is intentionally stored outside the repository:
 
 - macOS/Linux: `~/.devcontainer-agent-state/remote-test/`
 - Windows: `%USERPROFILE%\.devcontainer-agent-state\remote-test\`
+
+The required subdirectories are created automatically on the host before container startup:
+
+- `codex`
+- `gemini`
+- `gemini-config`
+- `claude`
+- `claude-persist`
 
 Mounted locations inside the container:
 

@@ -9,6 +9,8 @@ Der Devcontainer bind-mountet Agent-State vom Host in den Container:
 - macOS/Linux: `$HOME/.devcontainer-agent-state/remote-test/`
 - Windows: `%USERPROFILE%\\.devcontainer-agent-state\\remote-test\\`
 
+`initializeCommand` legt die benoetigten Host-Ordner vor dem eigentlichen `docker run` automatisch an. Dadurch schlagen neue Clients nicht mehr an fehlenden Bind-Mount-Quellen fehl.
+
 Wichtige Mounts:
 
 - `~/.codex`
@@ -19,7 +21,7 @@ Wichtige Mounts:
 
 ## Wrapper und Bootstrap
 
-`postCreateCommand` und `postStartCommand` rufen beide `.devcontainer/scripts/bootstrap.sh` auf. Das Skript:
+`initializeCommand` bereitet zuerst die Host-Mounts vor. Danach rufen `postCreateCommand` und `postStartCommand` beide `.devcontainer/scripts/bootstrap.sh` auf. Das Skript:
 
 - erstellt Wrapper fuer `codex`, `gemini`, `claude`, `claude-login`, `claude-bridge` und `agent-doctor`
 - legt zusaetzliche Shims unter `~/.local/bin` an, damit die Wrapper im `PATH` vor den echten Binaries liegen

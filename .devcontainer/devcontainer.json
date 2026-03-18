@@ -5,6 +5,7 @@
     "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
   },
   "remoteUser": "node",
+  "initializeCommand": "pwsh -NoProfile -ExecutionPolicy Bypass -File .devcontainer/windows/prepare-agent-state.ps1 || powershell -NoProfile -ExecutionPolicy Bypass -File .devcontainer/windows/prepare-agent-state.ps1 || bash .devcontainer/scripts/prepare-agent-state.sh",
 
   "runArgs": [
     "--env-file",
