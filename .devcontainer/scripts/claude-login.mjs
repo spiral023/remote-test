@@ -15,11 +15,14 @@ const wrapperPaths = new Set([
 ]);
 const watchIntervalMs = 250;
 const maxWatchIterations = 80;
+const maxLoginAttempts = 2;
 
 let bridgeStartedForPort = null;
 let stdoutBuffer = "";
 let stderrBuffer = "";
 let watcherCancelled = false;
+let detectedCallbackPort = null;
+let currentClaudePid = null;
 
 let autoStartClaude = process.env.CLAUDE_LOGIN_NO_START !== "1";
 const extraArgs = [];
@@ -281,6 +284,8 @@ function maybeStartBridge(port, source) {
 function handleDetectedListener(listener, source) {
   if (!listener) return false;
 
+  detectedCallbackPort = listener.port;
+
   if (listener.host === "127.0.0.1") {
     process.stderr.write(
       `[claude-login] OAuth-Callback-Port ${listener.port} erkannt (${source}, IPv4 ${listener.host}); keine Bridge nötig\n`,
@@ -330,6 +335,7 @@ function startLoopbackWatcher(pid) {
 }
 
 function inspectPortHint(port, pid, source) {
+  detectedCallbackPort = port;
   const listener = detectLoopbackListener(pid, port);
   if (handleDetectedListener(listener, source)) {
     return;
@@ -352,8 +358,124 @@ function inspectChunk(chunk, streamName) {
 
   const port = tryExtractPort(text) || tryExtractPort(stdoutBuffer) || tryExtractPort(stderrBuffer);
   if (port) {
-    inspectPortHint(port, child.pid, "stdout-regex");
+    inspectPortHint(port, currentClaudePid, "stdout-regex");
   }
+}
+
+function resetAttemptState() {
+  bridgeStartedForPort = null;
+  stdoutBuffer = "";
+  stderrBuffer = "";
+  watcherCancelled = false;
+  detectedCallbackPort = null;
+  currentClaudePid = null;
+}
+
+function shouldRetryLoginAttempt(code, signal, attemptNumber) {
+  if (signal || (code ?? 0) === 0 || attemptNumber >= maxLoginAttempts) {
+    return false;
+  }
+
+  if (extraArgs.includes("--help") || extraArgs.includes("-h")) {
+    return false;
+  }
+
+  const combinedOutput = `${stdoutBuffer}\n${stderrBuffer}`;
+  const startedBrowserFlow =
+    combinedOutput.includes("Opening browser to sign in") ||
+    tryExtractPort(combinedOutput) !== null ||
+    detectedCallbackPort !== null;
+
+  return startedBrowserFlow;
+}
+
+function launchClaudeAfterLogin() {
+  const launcher = resolveClaudeLauncher();
+  if (!launcher) {
+    process.stderr.write("[claude-login] Login erfolgreich, aber Claude-Launcher wurde nicht gefunden\n");
+    process.exit(1);
+  }
+
+  process.stderr.write(`[claude-login] Login erfolgreich. Starte jetzt: ${launcher}\n`);
+  const next = spawn(launcher, {
+    stdio: "inherit",
+    env: process.env,
+  });
+
+  next.on("error", (err) => {
+    process.stderr.write(`[claude-login] Fehler beim Start von Claude: ${err.message}\n`);
+    process.exit(1);
+  });
+
+  next.on("exit", (nextCode, nextSignal) => {
+    if (nextSignal) {
+      process.stderr.write(`[claude-login] Claude beendet durch Signal ${nextSignal}\n`);
+      process.exit(1);
+    }
+    process.exit(nextCode ?? 0);
+  });
+}
+
+function runLoginAttempt(attemptNumber) {
+  resetAttemptState();
+  restoreClaudeRootConfig();
+  ensureClaudeOnboardingState();
+
+  const child = spawn(realClaude, args, {
+    stdio: ["inherit", "pipe", "pipe"],
+    env: childEnv,
+  });
+  currentClaudePid = child.pid;
+  const stopWatcher = startLoopbackWatcher(child.pid);
+
+  child.stdout.on("data", (chunk) => {
+    process.stdout.write(chunk);
+    inspectChunk(chunk, "stdout");
+  });
+
+  child.stderr.on("data", (chunk) => {
+    process.stderr.write(chunk);
+    inspectChunk(chunk, "stderr");
+  });
+
+  child.on("error", (err) => {
+    stopWatcher();
+    ensureClaudeOnboardingState();
+    persistClaudeRootConfig();
+    process.stderr.write(`[claude-login] Fehler beim Start von Claude: ${err.message}\n`);
+    process.exit(1);
+  });
+
+  child.on("exit", (code, signal) => {
+    stopWatcher();
+    ensureClaudeOnboardingState();
+    persistClaudeRootConfig();
+    if (signal) {
+      process.stderr.write(`[claude-login] Claude beendet durch Signal ${signal}\n`);
+      process.exit(1);
+    }
+
+    if (shouldRetryLoginAttempt(code, signal, attemptNumber)) {
+      process.stderr.write(
+        `[claude-login] Login-Versuch ${attemptNumber} fehlgeschlagen. Starte automatisch einen zweiten Versuch.\n`,
+      );
+      runLoginAttempt(attemptNumber + 1);
+      return;
+    }
+
+    const shouldAutoLaunch =
+      (code ?? 0) === 0 &&
+      autoStartClaude &&
+      !extraArgs.includes("--help") &&
+      !extraArgs.includes("-h");
+
+    if (shouldAutoLaunch) {
+      launchClaudeAfterLogin();
+      return;
+    }
+
+    process.exit(code ?? 0);
+  });
 }
 
 const realClaude = resolveClaudeBinary();
@@ -367,75 +489,4 @@ process.stderr.write(`[claude-login] Starte: ${realClaude} ${args.join(" ")}\n`)
 process.stderr.write("[claude-login] Erzwinge fuer Claude-Login IPv4-first DNS-Reihenfolge\n");
 
 const childEnv = withIpv4FirstNodeOptions(process.env);
-restoreClaudeRootConfig();
-ensureClaudeOnboardingState();
-
-const child = spawn(realClaude, args, {
-  stdio: ["inherit", "pipe", "pipe"],
-  env: childEnv,
-});
-const stopWatcher = startLoopbackWatcher(child.pid);
-
-child.stdout.on("data", (chunk) => {
-  process.stdout.write(chunk);
-  inspectChunk(chunk, "stdout");
-});
-
-child.stderr.on("data", (chunk) => {
-  process.stderr.write(chunk);
-  inspectChunk(chunk, "stderr");
-});
-
-child.on("error", (err) => {
-  stopWatcher();
-  ensureClaudeOnboardingState();
-  persistClaudeRootConfig();
-  process.stderr.write(`[claude-login] Fehler beim Start von Claude: ${err.message}\n`);
-  process.exit(1);
-});
-
-child.on("exit", (code, signal) => {
-  stopWatcher();
-  ensureClaudeOnboardingState();
-  persistClaudeRootConfig();
-  if (signal) {
-    process.stderr.write(`[claude-login] Claude beendet durch Signal ${signal}\n`);
-    process.exit(1);
-  }
-
-  const shouldAutoLaunch =
-    (code ?? 0) === 0 &&
-    autoStartClaude &&
-    !extraArgs.includes("--help") &&
-    !extraArgs.includes("-h");
-
-  if (shouldAutoLaunch) {
-    const launcher = resolveClaudeLauncher();
-    if (!launcher) {
-      process.stderr.write("[claude-login] Login erfolgreich, aber Claude-Launcher wurde nicht gefunden\n");
-      process.exit(1);
-    }
-
-    process.stderr.write(`[claude-login] Login erfolgreich. Starte jetzt: ${launcher}\n`);
-    const next = spawn(launcher, {
-      stdio: "inherit",
-      env: process.env,
-    });
-
-    next.on("error", (err) => {
-      process.stderr.write(`[claude-login] Fehler beim Start von Claude: ${err.message}\n`);
-      process.exit(1);
-    });
-
-    next.on("exit", (nextCode, nextSignal) => {
-      if (nextSignal) {
-        process.stderr.write(`[claude-login] Claude beendet durch Signal ${nextSignal}\n`);
-        process.exit(1);
-      }
-      process.exit(nextCode ?? 0);
-    });
-    return;
-  }
-
-  process.exit(code ?? 0);
-});
+runLoginAttempt(1);

@@ -189,6 +189,7 @@ Claude's login flow assumes a local callback path that is easy on a normal machi
 - starts login with `--dns-result-order=ipv4first`
 - detects the actual callback listener opened by Claude
 - starts the IPv4 to IPv6 bridge only when needed
+- retries the login flow once automatically if the browser-based OAuth flow starts but the first attempt fails
 - syncs `~/.claude.json` into persistent storage
 - ensures onboarding state exists so `claude` does not fall back into setup screens
 - auto-starts `claude` after a successful login

@@ -53,6 +53,7 @@ Deshalb macht `claude-login` folgendes automatisch:
 - startet Login mit `--dns-result-order=ipv4first`
 - erkennt den echten lokalen Callback-Port ueber die offenen Listener des Claude-Prozesses
 - startet nur bei Bedarf die IPv4->IPv6-Bridge
+- startet bei einem fehlgeschlagenen ersten Browser-Login automatisch einen zweiten Versuch
 - spiegelt `~/.claude.json` in den persistenten Claude-Mount
 - setzt `theme`, `hasCompletedOnboarding` und `lastOnboardingVersion`, wenn bereits gueltige Claude-OAuth-Daten vorliegen
 - startet nach erfolgreichem Login direkt `claude`
